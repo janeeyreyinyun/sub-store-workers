@@ -152,7 +152,6 @@ jobs:
           echo "mb=$MB" >> $GITHUB_OUTPUT
           echo "gzip_kb=$GZIP_KB" >> $GITHUB_OUTPUT
           echo "worker.js raw: ${KB} KB (${MB} MB), gzipped: ${GZIP_KB} KB"
-          # Workers 付费上限 10 MiB（gzipped），免费 3 MiB（gzipped）
           HARD_LIMIT=$((10 * 1024 * 1024))
           if [ "$GZIP_BYTES" -gt "$HARD_LIMIT" ]; then
             echo "::error::Worker bundle gzipped size ${GZIP_KB} KB exceeds Cloudflare 10 MiB hard limit"
@@ -191,6 +190,7 @@ jobs:
           sed -i "s/__KV_ID__/${{ secrets.KV_NAMESPACE_ID }}/" wrangler.toml
           echo "Generated wrangler.toml:"
           cat wrangler.toml
+
       - name: Verify Cloudflare API Token
         if: steps.check.outputs.needed == 'true'
         env:
@@ -202,6 +202,7 @@ jobs:
             echo "::error::Cloudflare API Token is missing or empty"
             exit 1
           fi
+
       - name: Deploy Workers
         if: steps.check.outputs.needed == 'true'
         working-directory: sub-store-workers
@@ -209,10 +210,9 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler deploy
-        
-        
+
       - name: Set Workers access password
-        if: steps.check.outputs.needed == 'true'
+        if: steps.check.outputs.needed == 'true' || github.event_name == 'workflow_dispatch'
         working-directory: sub-store-workers
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -227,7 +227,7 @@ jobs:
             /*) ;;
             *) echo "::error::Password must start with /"; exit 1 ;;
           esac
-          printf '%s' "$SUB_STORE_PASSWORD_VALUE" | npx wrangler secret put SUB_STORE_FRONTEND_BACKEND_PATH
+          printf '%s' "$SUB_STORE_PASSWORD_VALUE" | npx --yes wrangler@4.129.0 secret put SUB_STORE_FRONTEND_BACKEND_PATH
 
       - name: Health check
         if: steps.check.outputs.needed == 'true'
@@ -253,9 +253,9 @@ jobs:
             echo ""
             echo "| 项目 | 值 |"
             echo "| --- | --- |"
-            echo "| 上游版本 | \`${{ steps.upstream.outputs.version }}\` |"
-            echo "| 上游 SHA | \`${{ steps.upstream.outputs.sha }}\` |"
-            echo "| 上次同步 SHA | \`${{ steps.last.outputs.sha }}\` |"
+            echo "| 上游版本 | `${{ steps.upstream.outputs.version }}` |"
+            echo "| 上游 SHA | `${{ steps.upstream.outputs.sha }}` |"
+            echo "| 上次同步 SHA | `${{ steps.last.outputs.sha }}` |"
             echo "| Worker 原始大小 | ${{ steps.size.outputs.kb }} KB (${{ steps.size.outputs.mb }} MB) |"
             echo "| Worker gzip 大小 | ${{ steps.size.outputs.gzip_kb }} KB |"
             echo ""
