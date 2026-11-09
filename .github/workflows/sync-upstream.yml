@@ -170,6 +170,8 @@ jobs:
           cat > wrangler.toml <<'TOML'
           name = "sub-store-workers"
           main = "dist/worker.js"
+          workers_dev = false
+          routes = [{ pattern = "substore.kongguwuyin.dpdns.org", custom_domain = true }]
           compatibility_date = "2024-09-23"
           compatibility_flags = ["nodejs_compat"]
 
@@ -197,63 +199,29 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler deploy
-
-      - name: Prepare Pages bundle
-        if: steps.check.outputs.needed == 'true'
-        working-directory: sub-store-workers
-        run: |
-          mkdir -p pages-dist
-          cp dist/worker.js pages-dist/_worker.js
-          cp dist/quickjs.wasm pages-dist/quickjs.wasm
-
-      - name: Deploy Pages
+        
+      - name: Set Workers access password
         if: steps.check.outputs.needed == 'true'
         working-directory: sub-store-workers
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SUB_STORE_PASSWORD_VALUE: ${{ secrets.SUB_STORE_PASSWORD_VALUE }}
         run: |
-          npx wrangler pages deploy pages-dist \
-            --project-name "${{ secrets.PAGES_PROJECT_NAME }}" \
-            --branch main \
-            --commit-message "upstream ${{ steps.upstream.outputs.version }}" \
-            --commit-dirty=true
-
-      - name: Set Pages environment variables
-        if: steps.check.outputs.needed == 'true'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          PAGES_PROJECT_NAME: ${{ secrets.PAGES_PROJECT_NAME }}
-        run: |
-          echo "Setting SCRIPT_ENGINE=quickjs for Pages project: ${PAGES_PROJECT_NAME}"
-          RESP=$(curl -s -X PATCH \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/${PAGES_PROJECT_NAME}" \
-            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "deployment_configs": {
-                "production": {
-                  "env_vars": {
-                    "SCRIPT_ENGINE": {
-                      "value": "quickjs",
-                      "type": "plain_text"
-                    }
-                  }
-                }
-              }
-            }')
-          SUCCESS=$(echo "$RESP" | jq -r '.success // false')
-          if [ "$SUCCESS" = "true" ]; then
-            echo "Pages environment variables set successfully"
-          else
-            echo "::warning::Failed to set Pages environment variables: $(echo "$RESP" | jq -r '.errors // []')"
+          if [ -z "$SUB_STORE_PASSWORD_VALUE" ]; then
+            echo "::error::SUB_STORE_PASSWORD_VALUE is empty"
+            exit 1
           fi
+          case "$SUB_STORE_PASSWORD_VALUE" in
+            /*) ;;
+            *) echo "::error::Password must start with /"; exit 1 ;;
+          esac
+          printf '%s' "$SUB_STORE_PASSWORD_VALUE" | npx wrangler secret put SUB_STORE_FRONTEND_BACKEND_PATH
 
       - name: Health check
         if: steps.check.outputs.needed == 'true'
         run: |
-          URL="https://sub-store-workers.${{ secrets.WORKERS_SUBDOMAIN }}.workers.dev"
+          URL="https://substore.kongguwuyin.dpdns.org"
           for i in 1 2 3; do
             sleep 10
             CODE=$(curl -s -o /dev/null -w "%{http_code}" "$URL/")
@@ -302,7 +270,7 @@ jobs:
           BARK_KEY: ${{ secrets.BARK_KEY }}
         run: |
           TITLE=$(printf 'Sub-Store %%E5%%B7%%B2%%E6%%9B%%B4%%E6%%96%%B0' | sed 's/%%/%/g')
-          curl -s "https://api.day.app/${BARK_KEY}/Sub-Store%20${{ steps.upstream.outputs.version }}/Workers%20%2B%20Pages%20deployed"
+          curl -s "https://api.day.app/${BARK_KEY}/Sub-Store%20${{ steps.upstream.outputs.version }}/Workers%20deployed"
 
       - name: Bark notify failure
         if: failure() && env.BARK_KEY != ''
