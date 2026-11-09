@@ -191,7 +191,17 @@ jobs:
           sed -i "s/__KV_ID__/${{ secrets.KV_NAMESPACE_ID }}/" wrangler.toml
           echo "Generated wrangler.toml:"
           cat wrangler.toml
-
+      - name: Verify Cloudflare API Token
+        if: steps.check.outputs.needed == 'true'
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -n "$CF_TOKEN" ]; then
+            echo "Cloudflare API Token is available"
+          else
+            echo "::error::Cloudflare API Token is missing or empty"
+            exit 1
+          fi
       - name: Deploy Workers
         if: steps.check.outputs.needed == 'true'
         working-directory: sub-store-workers
