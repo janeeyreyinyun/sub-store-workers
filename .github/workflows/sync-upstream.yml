@@ -200,6 +200,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler deploy
         
+        
       - name: Set Workers access password
         if: steps.check.outputs.needed == 'true'
         working-directory: sub-store-workers
