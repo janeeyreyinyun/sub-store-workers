@@ -173,6 +173,8 @@ jobs:
           check_status "Frontend SPA route" "/subs" "200"
           check_status "Unprefixed management API" "/api/subs" "401"
           check_not_status "Prefixed management API reaches backend" "/runtime-test-secret/api/subs" "401"
+          check_status "Public download lookalike is not exempt" "/api/downloadXYZ" "401"
+          check_status "Public preview lookalike is not exempt" "/api/previewXYZ" "401"
           check_status "Share route without token" "/share/sub/test" "403"
           check_not_status "Public download API exception" "/api/download/test" "401"
           check_not_status "Public preview API exception" "/api/preview/test" "401"
