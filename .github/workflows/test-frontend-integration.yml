@@ -84,6 +84,95 @@ jobs:
           test -d dist/assets
           echo "Frontend build output verified."
 
+      - name: Prepare isolated local runtime test
+        working-directory: sub-store-workers
+        run: |
+          mkdir -p frontend-dist
+          cp -a ../Sub-Store-Front-End/dist/. frontend-dist/
+          cat > wrangler.runtime.toml <<'TOML'
+          name = "sub-store-workers-runtime-test"
+          main = "dist/worker.js"
+          compatibility_date = "2024-09-23"
+          compatibility_flags = ["nodejs_compat"]
+
+          [assets]
+          directory = "./frontend-dist"
+          binding = "ASSETS"
+          run_worker_first = true
+          not_found_handling = "single-page-application"
+
+          [[kv_namespaces]]
+          binding = "SUB_STORE_DATA"
+          id = "00000000000000000000000000000000"
+
+          [vars]
+          SCRIPT_ENGINE = "quickjs"
+          SUB_STORE_FRONTEND_BACKEND_PATH = "/runtime-test-secret"
+          TOML
+          sed -i 's/^          //' wrangler.runtime.toml
+
+      - name: Run local Worker runtime smoke tests
+        working-directory: sub-store-workers
+        run: |
+          set -euo pipefail
+          npx wrangler dev --local --config wrangler.runtime.toml --ip 127.0.0.1 --port 8787 > /tmp/sub-store-wrangler.log 2>&1 &
+          WRANGLER_PID=$!
+          cleanup() {
+            kill "$WRANGLER_PID" 2>/dev/null || true
+            wait "$WRANGLER_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          READY=0
+          for attempt in $(seq 1 40); do
+            if curl --silent --fail http://127.0.0.1:8787/ >/dev/null; then
+              READY=1
+              break
+            fi
+            if ! kill -0 "$WRANGLER_PID" 2>/dev/null; then
+              cat /tmp/sub-store-wrangler.log
+              exit 1
+            fi
+            sleep 2
+          done
+          if [ "$READY" != "1" ]; then
+            cat /tmp/sub-store-wrangler.log
+            echo "Local Worker did not become ready."
+            exit 1
+          fi
+
+          check_status() {
+            label="$1"
+            path="$2"
+            expected="$3"
+            actual=$(curl --silent --output /tmp/sub-store-response --write-out '%{http_code}' "http://127.0.0.1:8787$path")
+            echo "$label: HTTP $actual (expected $expected)"
+            if [ "$actual" != "$expected" ]; then
+              cat /tmp/sub-store-response
+              return 1
+            fi
+          }
+
+          check_not_status() {
+            label="$1"
+            path="$2"
+            forbidden="$3"
+            actual=$(curl --silent --output /tmp/sub-store-response --write-out '%{http_code}' "http://127.0.0.1:8787$path")
+            echo "$label: HTTP $actual (must not be $forbidden)"
+            if [ "$actual" = "$forbidden" ]; then
+              cat /tmp/sub-store-response
+              return 1
+            fi
+          }
+
+          check_status "Frontend root" "/" "200"
+          check_status "Frontend SPA route" "/subs" "200"
+          check_status "Unprefixed management API" "/api/subs" "401"
+          check_not_status "Prefixed management API reaches backend" "/runtime-test-secret/api/subs" "401"
+          check_status "Share route without token" "/share/sub/test" "403"
+          check_not_status "Public download API exception" "/api/download/test" "401"
+          check_not_status "Public preview API exception" "/api/preview/test" "401"
+
       - name: Validate frontend routing and production safety guards
         working-directory: sub-store-workers
         run: |
