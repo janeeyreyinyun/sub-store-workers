@@ -265,6 +265,8 @@ SUB_STORE_FRONTEND_BACKEND_PATH = "/你的密码"
 
 > 仅在临时调试时使用。明文写仓库文件容易随 commit 泄漏；同时 `wrangler deploy` 会用它覆盖 Secret，破坏方式 A 的 CI/Secret 流程。生产环境请使用方式 A。
 
+> 网页入口登录（可选）：在 Cloudflare Worker 的 Settings → Variables and Secrets 中新增 Secret `SUB_STORE_WEB_PASSWORD`，值设为网页登录密码。访问前端网页时浏览器会弹出 Basic Auth 登录框，用户名固定为 `admin`；浏览器会缓存登录凭据，同一浏览器会话中通常只需登录一次。此设置仅保护网页和静态资源，管理 API、分享、下载和预览接口不受此认证保护。
+
 > 分享链接（download/preview）不受鉴权影响，无需密码即可访问。
 
 > **分享按钮**：订阅列表里的“分享”按钮仅在通过密码前缀访问时显示（与上游 Docker/Node 部署的 `be_merge` 行为一致），未配置密码前缀的部署不会显示分享按钮。
@@ -304,6 +306,7 @@ Pages 需要在 Dashboard 手动添加同名环境变量。不支持 shoutrrr（
 | 变量 | 说明 | 必填 |
 |---|---|---|
 | `SUB_STORE_FRONTEND_BACKEND_PATH` | API 路径前缀密码，推荐用 Worker Secret 管理 | 否（生产环境必设） |
+| `SUB_STORE_WEB_PASSWORD` | 网页入口 Basic Auth 密码（用户名固定为 `admin`），只保护前端页面，不保护 API/分享接口 | 否 |
 | `SUB_STORE_PUSH_SERVICE` | HTTP URL 推送地址 | 否 |
 | `SCRIPT_ENGINE` | 默认启用 QuickJS WASM 沙箱执行 Script Operator；设为 `disabled` 可关闭 | 否 |
 
