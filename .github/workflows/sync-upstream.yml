@@ -273,13 +273,19 @@ jobs:
           URL="https://substore.kongguwuyin.dpdns.org"
           for i in 1 2 3; do
             sleep 10
-            CODE=$(curl -s -o /dev/null -w "%{http_code}" "$URL/")
-            echo "Attempt $i: HTTP $CODE"
+            RESPONSE=$(curl -sS -D - -o /dev/null "$URL/" || true)
+            CODE=$(printf '%s\n' "$RESPONSE" | awk 'toupper($1) ~ /^HTTP\// { code=$2 } END { print code }')
+            CHALLENGE=$(printf '%s\n' "$RESPONSE" | tr -d '\r' | grep -i '^www-authenticate: Basic' || true)
+            echo "Attempt $i: HTTP ${CODE:-000}"
             if [ "$CODE" = "200" ]; then
               echo "Frontend homepage returned HTTP 200"
               exit 0
             fi
-            echo "Expected HTTP 200 from frontend homepage; got $CODE"
+            if [ "$CODE" = "401" ] && [ -n "$CHALLENGE" ]; then
+              echo "Frontend is responding and Basic Auth challenge is active (HTTP 401)"
+              exit 0
+            fi
+            echo "Expected HTTP 200 or HTTP 401 with Basic Auth challenge; got ${CODE:-000}"
           done
           echo "Worker health check failed"
           exit 1
