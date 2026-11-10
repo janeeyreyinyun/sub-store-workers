@@ -120,10 +120,15 @@ jobs:
         working-directory: sub-store-workers
         run: |
           set -euo pipefail
-          npx wrangler dev --local --config wrangler.runtime.toml --ip 127.0.0.1 --port 8787 > /tmp/sub-store-wrangler.log 2>&1 &
+          setsid npx wrangler dev --local --config wrangler.runtime.toml --ip 127.0.0.1 --port 8787 > /tmp/sub-store-wrangler.log 2>&1 &
           WRANGLER_PID=$!
           cleanup() {
-            kill "$WRANGLER_PID" 2>/dev/null || true
+            kill -- -"$WRANGLER_PID" 2>/dev/null || true
+            for attempt in $(seq 1 20); do
+              if ! kill -0 "$WRANGLER_PID" 2>/dev/null; then break; fi
+              sleep 0.25
+            done
+            kill -KILL -- -"$WRANGLER_PID" 2>/dev/null || true
             wait "$WRANGLER_PID" 2>/dev/null || true
           }
           trap cleanup EXIT
@@ -233,7 +238,7 @@ jobs:
         timeout-minutes: 3
         run: |
           set -euo pipefail
-          setsid npx wrangler dev --local --config wrangler.runtime.toml --ip 127.0.0.1 --port 8787 > /tmp/sub-store-browser-wrangler.log 2>&1 &
+          setsid npx wrangler dev --local --config wrangler.runtime.toml --ip 127.0.0.1 --port 8788 > /tmp/sub-store-browser-wrangler.log 2>&1 &
           WRANGLER_PID=$!
           cleanup() {
             kill -- -"$WRANGLER_PID" 2>/dev/null || true
@@ -252,7 +257,7 @@ jobs:
 
           READY=0
           for attempt in $(seq 1 30); do
-            if curl --silent --fail --max-time 2 http://127.0.0.1:8787/ >/dev/null; then
+            if curl --silent --fail --max-time 2 http://127.0.0.1:8788/ >/dev/null; then
               READY=1
               break
             fi
@@ -289,7 +294,7 @@ jobs:
 
             for (const path of ['/', '/subs']) {
               console.log(`Browser test: navigating to ${path}`);
-              const response = await page.goto(`http://127.0.0.1:8787${path}`, {
+              const response = await page.goto(`http://127.0.0.1:8788${path}`, {
                 waitUntil: 'domcontentloaded',
                 timeout: 20000
               });
