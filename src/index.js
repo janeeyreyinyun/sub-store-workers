@@ -208,29 +208,66 @@ export default {
                 // token 有效，继续正常路由
             }
 
-            // 路由分发
-            let response = await $app.handleRequest(request);
-            let servedFrontendAsset = false;
-
-            // 前端静态资源兜底：仅在后端路由明确返回 404 时处理。
-            // API、订阅分享及下载路由不允许回退到 SPA，避免掩盖鉴权/Token 错误。
+            // 前端页面与静态资源优先由 ASSETS 提供，避免后端首页重定向到官方站点。
+            // 管理 API、分享、下载、预览和订阅路由仍由后端处理。
             const isBackendEndpoint =
                 pathname.startsWith('/api/') ||
                 pathname.startsWith('/share/') ||
                 pathname.startsWith('/download/') ||
                 pathname.startsWith('/preview/') ||
                 pathname.startsWith('/sub/');
+            let response;
+            let servedFrontendAsset = false;
             if (
-                response.status === 404 &&
                 !isBackendEndpoint &&
                 ['GET', 'HEAD'].includes(request.method.toUpperCase()) &&
                 env.ASSETS?.fetch
             ) {
-                const assetResponse = await env.ASSETS.fetch(request);
-                if (assetResponse.status !== 404) {
-                    response = assetResponse;
+                response = await env.ASSETS.fetch(request);
+                if (response.status !== 404) {
                     servedFrontendAsset = true;
+
+                    // 将现有密码前缀作为前端默认 API 地址写入浏览器本地配置，
+                    // 不把密码前缀放进页面 URL，也不改变后端鉴权规则。
+                    if (
+                        backendPath &&
+                        request.method.toUpperCase() === 'GET' &&
+                        (response.headers.get('Content-Type') || '').includes('text/html')
+                    ) {
+                        const html = await response.text();
+                        const apiUrl = new URL(backendPath.replace(/^\\//, ''), url.origin + '/').toString().replace(/\\/$/, '');
+                        const bootstrap = `<script>
+(() => {
+  try {
+    const key = 'hostAPI';
+    const apiUrl = ${JSON.stringify(apiUrl)};
+    const name = 'Self-hosted Sub-Store';
+    const saved = JSON.parse(localStorage.getItem(key) || '{"current":"","apis":[]}');
+    const apis = Array.isArray(saved.apis) ? saved.apis : [];
+    const existing = apis.find(item => item.name === name);
+    if (existing) existing.url = apiUrl;
+    else apis.push({ name, url: apiUrl });
+    localStorage.setItem(key, JSON.stringify({ current: name, apis }));
+  } catch (error) {
+    console.error('Failed to initialize self-hosted Sub-Store API', error);
+  }
+})();
+</script>`;
+                        const headers = new Headers(response.headers);
+                        headers.delete('Content-Length');
+                        headers.delete('Content-Encoding');
+                        headers.delete('ETag');
+                        response = new Response(
+                            html.includes('</head>')
+                                ? html.replace('</head>', bootstrap + '</head>')
+                                : bootstrap + html,
+                            { status: response.status, statusText: response.statusText, headers },
+                        );
+                    }
                 }
+            }
+            if (!servedFrontendAsset) {
+                response = await $app.handleRequest(request);
             }
 
             // 禁止 Cloudflare CDN/边缘节点缓存动态 API 响应
