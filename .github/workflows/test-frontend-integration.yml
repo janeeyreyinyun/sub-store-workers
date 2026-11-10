@@ -1,6 +1,9 @@
 name: Frontend Integration Build Test
 
 on:
+  push:
+    branches:
+      - feature/self-hosted-frontend
   workflow_dispatch:
 
 permissions:
