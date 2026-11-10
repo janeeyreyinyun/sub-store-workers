@@ -227,43 +227,6 @@ export default {
                 if (response.status !== 404) {
                     servedFrontendAsset = true;
 
-                    // 将现有密码前缀作为前端默认 API 地址写入浏览器本地配置，
-                    // 不把密码前缀放进页面 URL，也不改变后端鉴权规则。
-                    if (
-                        backendPath &&
-                        request.method.toUpperCase() === 'GET' &&
-                        (response.headers.get('Content-Type') || '').includes('text/html')
-                    ) {
-                        const html = await response.text();
-                        const apiUrl = new URL(backendPath.startsWith('/') ? backendPath.slice(1) : backendPath, url.origin + '/').toString().replace(/\/$/, '');
-                        const bootstrap = `<script>
-(() => {
-  try {
-    const key = 'hostAPI';
-    const apiUrl = ${JSON.stringify(apiUrl)};
-    const name = 'Self-hosted Sub-Store';
-    const saved = JSON.parse(localStorage.getItem(key) || '{"current":"","apis":[]}');
-    const apis = Array.isArray(saved.apis) ? saved.apis : [];
-    const existing = apis.find(item => item.name === name);
-    if (existing) existing.url = apiUrl;
-    else apis.push({ name, url: apiUrl });
-    localStorage.setItem(key, JSON.stringify({ current: name, apis }));
-  } catch (error) {
-    console.error('Failed to initialize self-hosted Sub-Store API', error);
-  }
-})();
-</script>`;
-                        const headers = new Headers(response.headers);
-                        headers.delete('Content-Length');
-                        headers.delete('Content-Encoding');
-                        headers.delete('ETag');
-                        response = new Response(
-                            html.includes('</head>')
-                                ? html.replace('</head>', bootstrap + '</head>')
-                                : bootstrap + html,
-                            { status: response.status, statusText: response.statusText, headers },
-                        );
-                    }
                 }
             }
             if (!servedFrontendAsset) {
