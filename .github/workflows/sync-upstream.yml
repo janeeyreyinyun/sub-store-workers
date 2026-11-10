@@ -228,7 +228,8 @@ jobs:
           fi
 
       - name: Deploy Workers
-        if: steps.check.outputs.needed == 'true'
+        # 生产 Worker 只允许从 main 分支部署；功能分支可构建和测试，不得触碰线上环境。
+        if: steps.check.outputs.needed == 'true' && github.ref == 'refs/heads/main'
         working-directory: sub-store-workers
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -236,7 +237,8 @@ jobs:
         run: npx wrangler deploy
 
       - name: Set Workers access password
-        if: steps.check.outputs.needed == 'true' || github.event_name == 'workflow_dispatch'
+        # 密码 Secret 也只允许由 main 分支写入生产 Worker。
+        if: (steps.check.outputs.needed == 'true' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
         working-directory: sub-store-workers
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -258,17 +260,18 @@ jobs:
           printf '%s' "$SUB_STORE_PASSWORD_VALUE" | npx --yes wrangler@4.129.0 secret put SUB_STORE_FRONTEND_BACKEND_PATH --name sub-store-workers
 
       - name: Health check
-        if: steps.check.outputs.needed == 'true'
+        if: steps.check.outputs.needed == 'true' && github.ref == 'refs/heads/main'
         run: |
           URL="https://substore.kongguwuyin.dpdns.org"
           for i in 1 2 3; do
             sleep 10
             CODE=$(curl -s -o /dev/null -w "%{http_code}" "$URL/")
             echo "Attempt $i: HTTP $CODE"
-            if [ "$CODE" = "200" ] || [ "$CODE" = "302" ] || [ "$CODE" = "404" ]; then
-              echo "Worker is alive"
+            if [ "$CODE" = "200" ]; then
+              echo "Frontend homepage returned HTTP 200"
               exit 0
             fi
+            echo "Expected HTTP 200 from frontend homepage; got $CODE"
           done
           echo "Worker health check failed"
           exit 1
