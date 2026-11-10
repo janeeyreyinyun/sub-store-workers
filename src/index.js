@@ -210,6 +210,7 @@ export default {
 
             // 路由分发
             let response = await $app.handleRequest(request);
+            let servedFrontendAsset = false;
 
             // 前端静态资源兜底：仅在后端路由明确返回 404 时处理。
             // API、订阅分享及下载路由不允许回退到 SPA，避免掩盖鉴权/Token 错误。
@@ -225,14 +226,20 @@ export default {
                 ['GET', 'HEAD'].includes(request.method.toUpperCase()) &&
                 env.ASSETS?.fetch
             ) {
-                response = await env.ASSETS.fetch(request);
+                const assetResponse = await env.ASSETS.fetch(request);
+                if (assetResponse.status !== 404) {
+                    response = assetResponse;
+                    servedFrontendAsset = true;
+                }
             }
 
             // 禁止 Cloudflare CDN/边缘节点缓存动态 API 响应
             // 未设置此头时，不同 URL 路径（如 /share/ 和 /download/）的响应可能被独立缓存，
             // 导致同一订阅在不同接口返回不一致（陈旧）的数据
-            response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
-            response.headers.set('CDN-Cache-Control', 'no-store');
+            if (!servedFrontendAsset) {
+                response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+                response.headers.set('CDN-Cache-Control', 'no-store');
+            }
 
             if (isAuthDisabledManagementApi) {
                 response.headers.set('X-Sub-Store-Security-Warning', 'SUB_STORE_FRONTEND_BACKEND_PATH is not configured; management API is public');
