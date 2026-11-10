@@ -84,7 +84,8 @@ jobs:
           corepack pnpm install --frozen-lockfile
           corepack pnpm build
           test -s dist/index.html
-          test -d dist/assets
+          test -d dist/chunks
+          test -d dist/css
           echo "Frontend build output verified."
 
       - name: Prepare isolated local runtime test
