@@ -209,7 +209,24 @@ export default {
             }
 
             // 路由分发
-            const response = await $app.handleRequest(request);
+            let response = await $app.handleRequest(request);
+
+            // 前端静态资源兜底：仅在后端路由明确返回 404 时处理。
+            // API、订阅分享及下载路由不允许回退到 SPA，避免掩盖鉴权/Token 错误。
+            const isBackendEndpoint =
+                pathname.startsWith('/api/') ||
+                pathname.startsWith('/share/') ||
+                pathname.startsWith('/download/') ||
+                pathname.startsWith('/preview/') ||
+                pathname.startsWith('/sub/');
+            if (
+                response.status === 404 &&
+                !isBackendEndpoint &&
+                ['GET', 'HEAD'].includes(request.method.toUpperCase()) &&
+                env.ASSETS?.fetch
+            ) {
+                response = await env.ASSETS.fetch(request);
+            }
 
             // 禁止 Cloudflare CDN/边缘节点缓存动态 API 响应
             // 未设置此头时，不同 URL 路径（如 /share/ 和 /download/）的响应可能被独立缓存，
