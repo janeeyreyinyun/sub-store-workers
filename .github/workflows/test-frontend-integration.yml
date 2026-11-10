@@ -190,6 +190,7 @@ jobs:
             ['frontend does not expose the backend password path through public HTML bootstrap', worker.includes('normalizeBackendPath') && !worker.includes('localStorage.setItem(key') && !worker.includes('Self-hosted Sub-Store')],
             ['management API without prefix is rejected when backend path is configured', worker.includes("if (!isPublicPath && pathname.startsWith('/api/'))") && worker.includes("jsonFailure(401, 'Unauthorized')")],
                       ['public download and preview API exceptions remain explicit', worker.includes('api\\/download') && worker.includes('api\\/preview') && worker.includes('api\\/sub\\/flow')],
+            ['public API exceptions enforce exact path boundaries', worker.includes('(?:\\\\/|$)/.test(pathname)')],
                       ['backend prefix matching is boundary-safe', worker.includes('matchesBackendPath(pathname, backendPath)') && worker.includes('stripBackendPath(pathname, backendPath)')],
                       ['share routes retain token validation', worker.includes("pathname.startsWith('/share/')") && worker.includes('consumeShareToken') && worker.includes("'Share token is required'")],
                       ['frontend only handles GET and HEAD requests', worker.includes("['GET', 'HEAD'].includes(request.method.toUpperCase())")],
