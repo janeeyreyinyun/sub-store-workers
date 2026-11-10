@@ -39,7 +39,6 @@ jobs:
           fetch-depth: 1
 
       - name: Checkout Sub-Store Front-End
-        if: steps.check.outputs.needed == 'true'
         uses: actions/checkout@v4
         with:
           repository: sub-store-org/Sub-Store-Front-End
