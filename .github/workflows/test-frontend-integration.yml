@@ -221,6 +221,99 @@ jobs:
           check_not_status "Public download API exception" "/api/download/test" "401"
           check_not_status "Public preview API exception" "/api/preview/test" "401"
 
+      - name: Install Playwright browser
+        working-directory: sub-store-workers
+        run: |
+          npm install --no-save --package-lock=false playwright@1.56.1
+          npx playwright install --with-deps chromium
+
+      - name: Verify Vue app in a real browser
+        working-directory: sub-store-workers
+        run: |
+          set -euo pipefail
+          npx wrangler dev --local --config wrangler.runtime.toml --ip 127.0.0.1 --port 8787 > /tmp/sub-store-browser-wrangler.log 2>&1 &
+          WRANGLER_PID=$!
+          cleanup() {
+            kill "$WRANGLER_PID" 2>/dev/null || true
+            wait "$WRANGLER_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          READY=0
+          for attempt in $(seq 1 40); do
+            if curl --silent --fail http://127.0.0.1:8787/ >/dev/null; then
+              READY=1
+              break
+            fi
+            if ! kill -0 "$WRANGLER_PID" 2>/dev/null; then
+              cat /tmp/sub-store-browser-wrangler.log
+              exit 1
+            fi
+            sleep 2
+          done
+          if [ "$READY" != "1" ]; then
+            cat /tmp/sub-store-browser-wrangler.log
+            echo "Local Worker did not become ready for browser test."
+            exit 1
+          fi
+
+          node --input-type=module <<'NODE'
+          import { chromium } from 'playwright';
+
+          const browser = await chromium.launch({ headless: true });
+          const page = await browser.newPage();
+          const pageErrors = [];
+          const failedResponses = [];
+          page.on('pageerror', error => pageErrors.push(error.message));
+          page.on('response', response => {
+            if (response.status() >= 500) {
+              failedResponses.push(`${response.status()} ${response.url()}`);
+            }
+          });
+
+          try {
+            const response = await page.goto('http://127.0.0.1:8787/', {
+              waitUntil: 'networkidle',
+              timeout: 60000
+            });
+            if (response?.status() !== 200) {
+              throw new Error(`Frontend root returned HTTP ${response?.status()}`);
+            }
+            await page.waitForFunction(() => {
+              const app = document.querySelector('#app');
+              return app && app.children.length > 0;
+            }, { timeout: 30000 });
+            const title = await page.title();
+            if (!title.toLowerCase().includes('sub-store')) {
+              throw new Error(`Unexpected document title: ${title}`);
+            }
+            console.log(`PASS: Vue app mounted at / (title: ${title})`);
+
+            const routeResponse = await page.goto('http://127.0.0.1:8787/subs', {
+              waitUntil: 'networkidle',
+              timeout: 60000
+            });
+            if (routeResponse?.status() !== 200) {
+              throw new Error(`SPA route /subs returned HTTP ${routeResponse?.status()}`);
+            }
+            await page.waitForFunction(() => {
+              const app = document.querySelector('#app');
+              return app && app.children.length > 0;
+            }, { timeout: 30000 });
+            console.log('PASS: Vue app mounted on SPA route /subs');
+
+            if (pageErrors.length) {
+              throw new Error('Browser JavaScript errors: ' + pageErrors.join(' | '));
+            }
+            if (failedResponses.length) {
+              throw new Error('Browser HTTP 5xx responses: ' + failedResponses.join(' | '));
+            }
+            console.log('PASS: no uncaught browser errors or HTTP 5xx responses');
+          } finally {
+            await browser.close();
+          }
+          NODE
+
       - name: Validate frontend routing and production safety guards
         working-directory: sub-store-workers
         run: |
