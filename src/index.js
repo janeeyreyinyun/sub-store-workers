@@ -216,6 +216,34 @@ export default {
                 pathname.startsWith('/download/') ||
                 pathname.startsWith('/preview/') ||
                 pathname.startsWith('/sub/');
+
+            // 可选的网页入口 Basic Auth：只保护前端页面/静态资源，不拦截 API、分享、下载和预览。
+            // 在 Cloudflare Worker Secret 中设置 SUB_STORE_WEB_PASSWORD，用户名固定为 admin。
+            if (!isBackendEndpoint && env.SUB_STORE_WEB_PASSWORD) {
+                const authorization = request.headers.get('Authorization') || '';
+                let authenticated = false;
+                if (authorization.startsWith('Basic ')) {
+                    try {
+                        const decoded = atob(authorization.slice(6));
+                        const separator = decoded.indexOf(':');
+                        authenticated = separator >= 0 &&
+                            decoded.slice(0, separator) === 'admin' &&
+                            decoded.slice(separator + 1) === env.SUB_STORE_WEB_PASSWORD;
+                    } catch (_) {
+                        authenticated = false;
+                    }
+                }
+                if (!authenticated) {
+                    return new Response('Authentication required', {
+                        status: 401,
+                        headers: {
+                            'WWW-Authenticate': 'Basic realm="Sub-Store", charset="UTF-8"',
+                            'Cache-Control': 'no-store',
+                            ...CORS_HEADERS,
+                        },
+                    });
+                }
+            }
             let response;
             let servedFrontendAsset = false;
             if (
