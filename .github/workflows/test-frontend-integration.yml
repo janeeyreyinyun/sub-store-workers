@@ -94,7 +94,7 @@ jobs:
           const checks = [
             ['frontend assets are tried before backend routing', worker.indexOf('env.ASSETS.fetch(request)') < worker.indexOf('$app.handleRequest(request)')],
             ['backend endpoints are excluded from frontend fallback', worker.includes("pathname.startsWith('/api/')") && worker.includes("pathname.startsWith('/share/')") && worker.includes("pathname.startsWith('/download/')") && worker.includes("pathname.startsWith('/preview/')") && worker.includes("pathname.startsWith('/sub/')")],
-            ['frontend API bootstrap uses configured backend path', worker.includes('normalizeBackendPath') && worker.includes("localStorage.setItem(key")],
+            ['frontend does not expose the backend password path through public HTML bootstrap', worker.includes('normalizeBackendPath') && !worker.includes('localStorage.setItem(key') && !worker.includes('Self-hosted Sub-Store')],
             ['production deploy is restricted to main', deploy.includes("github.ref == 'refs/heads/main'")],
             ['production password update is restricted to main', deploy.includes("&& github.ref == 'refs/heads/main'")],
             ['production health check requires HTTP 200', deploy.includes('if [ "$CODE" = "200" ]; then') && !deploy.includes('if [ "$CODE" = "200" ] ||')]
