@@ -235,7 +235,7 @@ export default {
                         (response.headers.get('Content-Type') || '').includes('text/html')
                     ) {
                         const html = await response.text();
-                        const apiUrl = new URL(backendPath.replace(/^\\//, ''), url.origin + '/').toString().replace(/\\/$/, '');
+                        const apiUrl = new URL(backendPath.startsWith('/') ? backendPath.slice(1) : backendPath, url.origin + '/').toString().replace(/\/$/, '');
                         const bootstrap = `<script>
 (() => {
   try {
