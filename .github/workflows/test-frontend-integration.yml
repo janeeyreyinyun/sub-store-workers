@@ -1,0 +1,103 @@
+name: Frontend Integration Build Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/self-hosted-frontend
+          path: sub-store-workers
+
+      - name: Checkout Sub-Store backend
+        uses: actions/checkout@v4
+        with:
+          repository: sub-store-org/Sub-Store
+          path: Sub-Store
+          fetch-depth: 1
+
+      - name: Checkout official frontend
+        uses: actions/checkout@v4
+        with:
+          repository: sub-store-org/Sub-Store-Front-End
+          ref: master
+          path: Sub-Store-Front-End
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: sub-store-workers/package-lock.json
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Configure backend build scripts
+        working-directory: Sub-Store/backend
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const file = 'pnpm-workspace.yaml';
+          const approved = ['core-js', 'esbuild', 'nodemon'];
+          let text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+          text = text.replace(/^onlyBuiltDependencies:\n(?:[ \t].*(?:\n|$))*/m, '');
+          if (!/^packages:/m.test(text)) text = `packages:\n  - .\n${text.trim() ? `\n${text.trimStart()}` : ''}`;
+          if (!/^allowBuilds:/m.test(text)) text = `${text.replace(/\s*$/, '')}\nallowBuilds:\n`;
+          for (const name of approved) {
+            const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const pattern = new RegExp(`^(\\s*${escaped}\\s*:\\s*).*$`, 'm');
+            if (pattern.test(text)) text = text.replace(pattern, `$1true`);
+            else text = text.replace(/^allowBuilds:\n/m, `allowBuilds:\n  ${name}: true\n`);
+          }
+          fs.writeFileSync(file, text);
+          NODE
+
+      - name: Install and test backend
+        working-directory: Sub-Store/backend
+        run: |
+          pnpm install --no-frozen-lockfile
+          pnpm test
+
+      - name: Install and test Worker
+        working-directory: sub-store-workers
+        run: |
+          npm ci
+          npm test
+          npm run build
+
+      - name: Build official frontend
+        working-directory: Sub-Store-Front-End
+        run: |
+          printf '%s\n' 'VITE_PUBLIC_PATH=/' > .env.production.local
+          corepack pnpm install --frozen-lockfile
+          corepack pnpm build
+          test -s dist/index.html
+          test -d dist/assets
+          echo "Frontend build output verified."
+
+      - name: Validate generated Wrangler configuration
+        working-directory: sub-store-workers
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const source = fs.readFileSync('.github/workflows/sync-upstream.yml', 'utf8');
+          for (const expected of [
+            '[assets]',
+            'directory = "./frontend-dist"',
+            'binding = "ASSETS"',
+            'run_worker_first = true',
+            'not_found_handling = "single-page-application"'
+          ]) {
+            if (!source.includes(expected)) throw new Error(`Missing Wrangler asset setting: ${expected}`);
+          }
+          console.log('Wrangler asset settings present in deployment workflow.');
+          NODE
