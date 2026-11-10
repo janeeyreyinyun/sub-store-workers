@@ -176,48 +176,41 @@ jobs:
           const origin = 'http://127.0.0.1:8787';
           const response = await fetch(origin + '/');
           const html = await response.text();
-          const scripts = [...html.matchAll(/src=["']([^"']+\\.js(?:\\?[^"']*)?)["']/g)]
-            .map((match) => new URL(match[1], origin));
-          if (!scripts.length) throw new Error('Frontend HTML does not reference a JavaScript asset.');
-
-          const fetchedScripts = new Set();
-          const pendingScripts = [...scripts];
-          while (pendingScripts.length) {
-            const asset = pendingScripts.shift();
-            if (fetchedScripts.has(asset.href)) continue;
-            fetchedScripts.add(asset.href);
-            const result = await fetch(asset);
-            const body = await result.text();
-            const contentType = result.headers.get('content-type') || '';
-            if (result.status !== 200 || !body.length) {
-              throw new Error(`JavaScript asset failed: ${asset.pathname} (HTTP ${result.status})`);
-            }
-            if (!/(javascript|ecmascript)/i.test(contentType)) {
-              throw new Error(`JavaScript asset has unexpected content-type: ${contentType}`);
-            }
-            console.log(`PASS: JavaScript asset ${asset.pathname} (HTTP 200, ${body.length} characters)`);
-            for (const match of body.matchAll(/(?:import\\s*\\(|from\\s*|import\\s*)["']([^"']+\\.js(?:\\?[^"']*)?)["']/g)) {
-              pendingScripts.push(new URL(match[1], asset));
-            }
-          }
-
           const { readdir } = await import('node:fs/promises');
-          const { join } = await import('node:path');
-          const cssDirectory = join(process.cwd(), 'frontend-dist', 'css');
-          const cssFiles = (await readdir(cssDirectory)).filter((name) => name.endsWith('.css'));
-          if (!cssFiles.length) throw new Error('Frontend build output contains no CSS files.');
-          for (const name of cssFiles) {
-            const asset = new URL(`/css/${name}`, origin);
-            const result = await fetch(asset);
-            const body = await result.arrayBuffer();
-            const contentType = result.headers.get('content-type') || '';
-            if (result.status !== 200 || body.byteLength === 0) {
-              throw new Error(`CSS asset failed: ${asset.pathname} (HTTP ${result.status}, ${body.byteLength} bytes)`);
+          const { join, relative, sep } = await import('node:path');
+          async function collectAssets(directory) {
+            const entries = await readdir(directory, { withFileTypes: true });
+            const files = [];
+            for (const entry of entries) {
+              const fullPath = join(directory, entry.name);
+              if (entry.isDirectory()) files.push(...await collectAssets(fullPath));
+              else if (/\.(?:js|css)$/.test(entry.name)) files.push(fullPath);
             }
-            if (!contentType.includes('text/css')) {
-              throw new Error(`CSS asset has unexpected content-type: ${contentType}`);
+            return files;
+          }
+          const outputDirectory = join(process.cwd(), 'frontend-dist');
+          const assets = await collectAssets(outputDirectory);
+          const jsAssets = assets.filter((file) => file.endsWith('.js'));
+          const cssAssets = assets.filter((file) => file.endsWith('.css'));
+          if (!jsAssets.length) throw new Error('Frontend build output contains no JavaScript files.');
+          if (!cssAssets.length) throw new Error('Frontend build output contains no CSS files.');
+          for (const [kind, files] of [['JavaScript', jsAssets], ['CSS', cssAssets]]) {
+            for (const file of files) {
+              const assetPath = '/' + relative(outputDirectory, file).split(sep).join('/');
+              const result = await fetch(new URL(assetPath, origin));
+              const body = await result.arrayBuffer();
+              const contentType = result.headers.get('content-type') || '';
+              if (result.status !== 200 || body.byteLength === 0) {
+                throw new Error(`${kind} asset failed: ${assetPath} (HTTP ${result.status}, ${body.byteLength} bytes)`);
+              }
+              if (kind === 'CSS' && !contentType.includes('text/css')) {
+                throw new Error(`CSS asset has unexpected content-type: ${contentType}`);
+              }
+              if (kind === 'JavaScript' && !/(javascript|ecmascript)/i.test(contentType)) {
+                throw new Error(`JavaScript asset has unexpected content-type: ${contentType}`);
+              }
+              console.log(`PASS: ${kind} asset ${assetPath} (HTTP 200, ${body.byteLength} bytes)`);
             }
-            console.log(`PASS: CSS asset ${asset.pathname} (HTTP 200, ${body.byteLength} bytes)`);
           }
           NODE
           check_status "Unprefixed management API" "/api/subs" "401"
