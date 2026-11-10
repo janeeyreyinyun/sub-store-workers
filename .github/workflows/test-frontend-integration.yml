@@ -1,0 +1,380 @@
+name: Frontend Integration Build Test
+
+on:
+  push:
+    branches:
+      - feature/self-hosted-frontend
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout this branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/self-hosted-frontend
+          path: sub-store-workers
+
+      - name: Checkout Sub-Store backend
+        uses: actions/checkout@v4
+        with:
+          repository: sub-store-org/Sub-Store
+          path: Sub-Store
+          fetch-depth: 1
+
+      - name: Checkout official frontend
+        uses: actions/checkout@v4
+        with:
+          repository: sub-store-org/Sub-Store-Front-End
+          ref: master
+          path: Sub-Store-Front-End
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: sub-store-workers/package-lock.json
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Configure backend build scripts
+        working-directory: Sub-Store/backend
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const file = 'pnpm-workspace.yaml';
+          const approved = ['core-js', 'esbuild', 'nodemon'];
+          let text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+          text = text.replace(/^onlyBuiltDependencies:\n(?:[ \t].*(?:\n|$))*/m, '');
+          if (!/^packages:/m.test(text)) text = `packages:\n  - .\n${text.trim() ? `\n${text.trimStart()}` : ''}`;
+          if (!/^allowBuilds:/m.test(text)) text = `${text.replace(/\s*$/, '')}\nallowBuilds:\n`;
+          for (const name of approved) {
+            const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const pattern = new RegExp(`^(\\s*${escaped}\\s*:\\s*).*$`, 'm');
+            if (pattern.test(text)) text = text.replace(pattern, `$1true`);
+            else text = text.replace(/^allowBuilds:\n/m, `allowBuilds:\n  ${name}: true\n`);
+          }
+          fs.writeFileSync(file, text);
+          NODE
+
+      - name: Install and test backend
+        working-directory: Sub-Store/backend
+        run: |
+          pnpm install --no-frozen-lockfile
+          pnpm test
+
+      - name: Install and test Worker
+        working-directory: sub-store-workers
+        run: |
+          npm ci
+          npm test
+          npm run build
+
+      - name: Build official frontend
+        working-directory: Sub-Store-Front-End
+        run: |
+          printf '%s\n' 'VITE_PUBLIC_PATH=/' > .env.production.local
+          corepack pnpm install --frozen-lockfile
+          corepack pnpm build
+          test -s dist/index.html
+          test -d dist/chunks
+          test -d dist/css
+          echo "Frontend build output verified."
+
+      - name: Prepare isolated local runtime test
+        working-directory: sub-store-workers
+        run: |
+          mkdir -p frontend-dist
+          cp -a ../Sub-Store-Front-End/dist/. frontend-dist/
+          cat > wrangler.runtime.toml <<'TOML'
+          name = "sub-store-workers-runtime-test"
+          main = "dist/worker.js"
+          compatibility_date = "2024-09-23"
+          compatibility_flags = ["nodejs_compat"]
+
+          [assets]
+          directory = "./frontend-dist"
+          binding = "ASSETS"
+          run_worker_first = true
+          not_found_handling = "single-page-application"
+
+          [[kv_namespaces]]
+          binding = "SUB_STORE_DATA"
+          id = "00000000000000000000000000000000"
+
+          [vars]
+          SCRIPT_ENGINE = "quickjs"
+          SUB_STORE_FRONTEND_BACKEND_PATH = "/runtime-test-secret"
+          TOML
+          sed -i 's/^          //' wrangler.runtime.toml
+
+      - name: Run local Worker runtime smoke tests
+        working-directory: sub-store-workers
+        run: |
+          set -euo pipefail
+          setsid npx wrangler dev --local --config wrangler.runtime.toml --ip 127.0.0.1 --port 8787 > /tmp/sub-store-wrangler.log 2>&1 &
+          WRANGLER_PID=$!
+          cleanup() {
+            kill -- -"$WRANGLER_PID" 2>/dev/null || true
+            for attempt in $(seq 1 20); do
+              if ! kill -0 "$WRANGLER_PID" 2>/dev/null; then break; fi
+              sleep 0.25
+            done
+            kill -KILL -- -"$WRANGLER_PID" 2>/dev/null || true
+            wait "$WRANGLER_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          READY=0
+          for attempt in $(seq 1 40); do
+            if curl --silent --fail http://127.0.0.1:8787/ >/dev/null; then
+              READY=1
+              break
+            fi
+            if ! kill -0 "$WRANGLER_PID" 2>/dev/null; then
+              cat /tmp/sub-store-wrangler.log
+              exit 1
+            fi
+            sleep 2
+          done
+          if [ "$READY" != "1" ]; then
+            cat /tmp/sub-store-wrangler.log
+            echo "Local Worker did not become ready."
+            exit 1
+          fi
+
+          check_status() {
+            label="$1"
+            path="$2"
+            expected="$3"
+            actual=$(curl --silent --output /tmp/sub-store-response --write-out '%{http_code}' "http://127.0.0.1:8787$path")
+            echo "$label: HTTP $actual (expected $expected)"
+            if [ "$actual" != "$expected" ]; then
+              cat /tmp/sub-store-response
+              return 1
+            fi
+          }
+
+          check_not_status() {
+            label="$1"
+            path="$2"
+            forbidden="$3"
+            actual=$(curl --silent --output /tmp/sub-store-response --write-out '%{http_code}' "http://127.0.0.1:8787$path")
+            echo "$label: HTTP $actual (must not be $forbidden)"
+            if [ "$actual" = "$forbidden" ]; then
+              cat /tmp/sub-store-response
+              return 1
+            fi
+          }
+
+          check_status "Frontend root" "/" "200"
+          check_status "Frontend SPA route" "/subs" "200"
+
+          node --input-type=module <<'NODE'
+          const origin = 'http://127.0.0.1:8787';
+          const response = await fetch(origin + '/');
+          const html = await response.text();
+          const { readdir } = await import('node:fs/promises');
+          const { join, relative, sep } = await import('node:path');
+          async function collectAssets(directory) {
+            const entries = await readdir(directory, { withFileTypes: true });
+            const files = [];
+            for (const entry of entries) {
+              const fullPath = join(directory, entry.name);
+              if (entry.isDirectory()) files.push(...await collectAssets(fullPath));
+              else if (/\.(?:js|css)$/.test(entry.name)) files.push(fullPath);
+            }
+            return files;
+          }
+          const outputDirectory = join(process.cwd(), 'frontend-dist');
+          const assets = await collectAssets(outputDirectory);
+          const jsAssets = assets.filter((file) => file.endsWith('.js'));
+          const cssAssets = assets.filter((file) => file.endsWith('.css'));
+          if (!jsAssets.length) throw new Error('Frontend build output contains no JavaScript files.');
+          if (!cssAssets.length) throw new Error('Frontend build output contains no CSS files.');
+          for (const [kind, files] of [['JavaScript', jsAssets], ['CSS', cssAssets]]) {
+            for (const file of files) {
+              const assetPath = '/' + relative(outputDirectory, file).split(sep).join('/');
+              const result = await fetch(new URL(assetPath, origin));
+              const body = await result.arrayBuffer();
+              const contentType = result.headers.get('content-type') || '';
+              if (result.status !== 200 || body.byteLength === 0) {
+                throw new Error(`${kind} asset failed: ${assetPath} (HTTP ${result.status}, ${body.byteLength} bytes)`);
+              }
+              if (kind === 'CSS' && !contentType.includes('text/css')) {
+                throw new Error(`CSS asset has unexpected content-type: ${contentType}`);
+              }
+              if (kind === 'JavaScript' && !/(javascript|ecmascript)/i.test(contentType)) {
+                throw new Error(`JavaScript asset has unexpected content-type: ${contentType}`);
+              }
+              console.log(`PASS: ${kind} asset ${assetPath} (HTTP 200, ${body.byteLength} bytes)`);
+            }
+          }
+          NODE
+          check_status "Unprefixed management API" "/api/subs" "401"
+          check_not_status "Prefixed management API reaches backend" "/runtime-test-secret/api/subs" "401"
+          check_status "Public download lookalike is not exempt" "/api/downloadXYZ" "401"
+          check_status "Public preview lookalike is not exempt" "/api/previewXYZ" "401"
+          check_status "Share route without token" "/share/sub/test" "403"
+          check_not_status "Public download API exception" "/api/download/test" "401"
+          check_not_status "Public preview API exception" "/api/preview/test" "401"
+
+      - name: Install Playwright browser
+        working-directory: sub-store-workers
+        run: |
+          npm install --no-save --package-lock=false playwright@1.56.1
+          npx playwright install --with-deps chromium
+
+      - name: Verify Vue app in a real browser
+        working-directory: sub-store-workers
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          setsid npx wrangler dev --local --config wrangler.runtime.toml --ip 127.0.0.1 --port 8788 > /tmp/sub-store-browser-wrangler.log 2>&1 &
+          WRANGLER_PID=$!
+          cleanup() {
+            kill -- -"$WRANGLER_PID" 2>/dev/null || true
+            # Never let process cleanup hold the GitHub Actions step open indefinitely.
+            for attempt in $(seq 1 20); do
+              if ! kill -0 "$WRANGLER_PID" 2>/dev/null; then
+                break
+              fi
+              sleep 0.25
+            done
+            kill -KILL -- -"$WRANGLER_PID" 2>/dev/null || true
+            # Reap the direct child; it has already received SIGKILL if still alive.
+            wait "$WRANGLER_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          READY=0
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail --max-time 2 http://127.0.0.1:8788/ >/dev/null; then
+              READY=1
+              break
+            fi
+            if ! kill -0 "$WRANGLER_PID" 2>/dev/null; then
+              cat /tmp/sub-store-browser-wrangler.log
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ "$READY" != "1" ]; then
+            cat /tmp/sub-store-browser-wrangler.log
+            echo "Local Worker did not become ready for browser test."
+            exit 1
+          fi
+
+          timeout --signal=TERM --kill-after=5s 90s node --input-type=module <<'NODE'
+          import { chromium } from 'playwright';
+
+          let browser;
+          const pageErrors = [];
+          const failedResponses = [];
+          try {
+            console.log('Browser test: launching Chromium.');
+            browser = await chromium.launch({ headless: true, timeout: 15000 });
+            const page = await browser.newPage();
+            page.setDefaultTimeout(15000);
+            page.setDefaultNavigationTimeout(20000);
+            page.on('pageerror', error => pageErrors.push(error.message));
+            page.on('response', response => {
+              if (response.status() >= 500) {
+                failedResponses.push(`${response.status()} ${response.url()}`);
+              }
+            });
+
+            for (const path of ['/', '/subs']) {
+              console.log(`Browser test: navigating to ${path}`);
+              const response = await page.goto(`http://127.0.0.1:8788${path}`, {
+                waitUntil: 'domcontentloaded',
+                timeout: 20000
+              });
+              if (response?.status() !== 200) {
+                throw new Error(`${path} returned HTTP ${response?.status()}`);
+              }
+              console.log(`Browser test: ${path} returned HTTP 200; waiting for Vue mount.`);
+              await page.waitForFunction(() => {
+                const app = document.querySelector('#app');
+                return app && app.children.length > 0;
+              }, { timeout: 15000 });
+              console.log(`PASS: Vue app mounted at ${path}`);
+              if (path === '/') {
+                const title = await page.title();
+                if (!title.toLowerCase().includes('sub-store')) {
+                  throw new Error(`Unexpected document title: ${title}`);
+                }
+              }
+            }
+
+            if (pageErrors.length) {
+              throw new Error('Browser JavaScript errors: ' + pageErrors.join(' | '));
+            }
+            if (failedResponses.length) {
+              throw new Error('Browser HTTP 5xx responses: ' + failedResponses.join(' | '));
+            }
+            console.log('PASS: no uncaught browser errors or HTTP 5xx responses');
+          } finally {
+            if (browser) {
+              console.log('Browser test: closing Chromium.');
+              await Promise.race([
+                browser.close(),
+                new Promise(resolve => setTimeout(resolve, 3000))
+              ]);
+            }
+          }
+          NODE
+
+      - name: Validate frontend routing and production safety guards
+        working-directory: sub-store-workers
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const worker = fs.readFileSync('src/index.js', 'utf8');
+          const deploy = fs.readFileSync('.github/workflows/sync-upstream.yml', 'utf8');
+          const checks = [
+            ['frontend assets are tried before backend routing', worker.indexOf('env.ASSETS.fetch(request)') < worker.indexOf('$app.handleRequest(request)')],
+            ['backend endpoints are excluded from frontend fallback', worker.includes("pathname.startsWith('/api/')") && worker.includes("pathname.startsWith('/share/')") && worker.includes("pathname.startsWith('/download/')") && worker.includes("pathname.startsWith('/preview/')") && worker.includes("pathname.startsWith('/sub/')")],
+            ['frontend does not expose the backend password path through public HTML bootstrap', worker.includes('normalizeBackendPath') && !worker.includes('localStorage.setItem(key') && !worker.includes('Self-hosted Sub-Store')],
+            ['management API without prefix is rejected when backend path is configured', worker.includes("if (!isPublicPath && pathname.startsWith('/api/'))") && worker.includes("jsonFailure(401, 'Unauthorized')")],
+                      ['public download and preview API exceptions remain explicit', worker.includes('api\\/download') && worker.includes('api\\/preview') && worker.includes('api\\/sub\\/flow')],
+            ['public API exceptions enforce exact path boundaries', worker.includes('(?:\\/|$)/.test(pathname)')],
+                      ['backend prefix matching is boundary-safe', worker.includes('matchesBackendPath(pathname, backendPath)') && worker.includes('stripBackendPath(pathname, backendPath)')],
+                      ['share routes retain token validation', worker.includes("pathname.startsWith('/share/')") && worker.includes('consumeShareToken') && worker.includes("'Share token is required'")],
+                      ['frontend only handles GET and HEAD requests', worker.includes("['GET', 'HEAD'].includes(request.method.toUpperCase())")],
+                      ['frontend assets fall through to backend on 404', worker.includes('if (!servedFrontendAsset)') && worker.includes('$app.handleRequest(request)')],
+            ['production deploy is restricted to main', deploy.includes("github.ref == 'refs/heads/main'")],
+            ['production password update is restricted to main', deploy.includes("&& github.ref == 'refs/heads/main'")],
+            ['production health check requires HTTP 200', deploy.includes('if [ "$CODE" = "200" ]; then') && !deploy.includes('if [ "$CODE" = "200" ] ||')]
+          ];
+          for (const [label, ok] of checks) {
+            console.log((ok ? 'PASS' : 'FAIL') + ': ' + label);
+            if (!ok) process.exitCode = 1;
+          }
+          NODE
+
+      - name: Validate generated Wrangler configuration
+        working-directory: sub-store-workers
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const source = fs.readFileSync('.github/workflows/sync-upstream.yml', 'utf8');
+          for (const expected of [
+            '[assets]',
+            'directory = "./frontend-dist"',
+            'binding = "ASSETS"',
+            'run_worker_first = true',
+            'not_found_handling = "single-page-application"'
+          ]) {
+            if (!source.includes(expected)) throw new Error(`Missing Wrangler asset setting: ${expected}`);
+          }
+          console.log('Wrangler asset settings present in deployment workflow.');
+          NODE

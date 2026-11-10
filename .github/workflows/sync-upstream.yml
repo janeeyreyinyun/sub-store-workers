@@ -38,6 +38,14 @@ jobs:
           path: Sub-Store
           fetch-depth: 1
 
+      - name: Checkout Sub-Store Front-End
+        uses: actions/checkout@v4
+        with:
+          repository: sub-store-org/Sub-Store-Front-End
+          ref: master
+          path: Sub-Store-Front-End
+          fetch-depth: 1
+
       - name: Get upstream version
         id: upstream
         working-directory: Sub-Store
@@ -46,30 +54,38 @@ jobs:
           VERSION=$(node -p "require('./backend/package.json').version")
           echo "sha=$SHA" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Upstream: $VERSION ($SHA)"
+          echo "Upstream backend: $VERSION ($SHA)"
 
-      - name: Read last synced version
+      - name: Get frontend upstream SHA
+        id: frontend_upstream
+        working-directory: Sub-Store-Front-End
+        run: |
+          SHA=$(git rev-parse HEAD)
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "Upstream frontend SHA: $SHA"
+
+      - name: Read last synced versions
         id: last
         working-directory: sub-store-workers
         run: |
-          if [ -f .upstream-sha ]; then
-            LAST=$(cat .upstream-sha)
-          else
-            LAST="none"
-          fi
-          echo "sha=$LAST" >> $GITHUB_OUTPUT
-          echo "Last synced: $LAST"
+          LAST_BACKEND=$(cat .upstream-sha 2>/dev/null || echo "none")
+          LAST_FRONTEND=$(cat .upstream-frontend-sha 2>/dev/null || echo "none")
+          echo "backend_sha=$LAST_BACKEND" >> $GITHUB_OUTPUT
+          echo "frontend_sha=$LAST_FRONTEND" >> $GITHUB_OUTPUT
+          echo "Last synced backend: $LAST_BACKEND"
+          echo "Last synced frontend: $LAST_FRONTEND"
 
       - name: Check if update needed
         id: check
         run: |
-          if [ "${{ steps.upstream.outputs.sha }}" = "${{ steps.last.outputs.sha }}" ] && [ "${{ inputs.force }}" != "true" ]; then
+          if [ "${{ steps.upstream.outputs.sha }}" = "${{ steps.last.outputs.backend_sha }}" ] && [ "${{ steps.frontend_upstream.outputs.sha }}" = "${{ steps.last.outputs.frontend_sha }}" ] && [ "${{ inputs.force }}" != "true" ]; then
             echo "needed=false" >> $GITHUB_OUTPUT
             echo "No update needed"
           else
             echo "needed=true" >> $GITHUB_OUTPUT
             echo "Update needed"
           fi
+
 
       - name: Setup Node
         if: steps.check.outputs.needed == 'true'
@@ -137,6 +153,16 @@ jobs:
         working-directory: sub-store-workers
         run: npm run build
 
+      - name: Build official frontend
+        if: steps.check.outputs.needed == 'true'
+        working-directory: Sub-Store-Front-End
+        run: |
+          printf '%s\n' 'VITE_PUBLIC_PATH=/' > .env.production.local
+          corepack pnpm install --frozen-lockfile
+          corepack pnpm build
+          mkdir -p ../sub-store-workers/frontend-dist
+          cp -a dist/. ../sub-store-workers/frontend-dist/
+
       - name: Check worker bundle size
         if: steps.check.outputs.needed == 'true'
         id: size
@@ -174,6 +200,12 @@ jobs:
           compatibility_date = "2024-09-23"
           compatibility_flags = ["nodejs_compat"]
 
+          [assets]
+          directory = "./frontend-dist"
+          binding = "ASSETS"
+          run_worker_first = true
+          not_found_handling = "single-page-application"
+
           [[kv_namespaces]]
           binding = "SUB_STORE_DATA"
           id = "__KV_ID__"
@@ -204,7 +236,8 @@ jobs:
           fi
 
       - name: Deploy Workers
-        if: steps.check.outputs.needed == 'true'
+        # 生产 Worker 只允许从 main 分支部署；功能分支可构建和测试，不得触碰线上环境。
+        if: steps.check.outputs.needed == 'true' && github.ref == 'refs/heads/main'
         working-directory: sub-store-workers
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -212,7 +245,8 @@ jobs:
         run: npx wrangler deploy
 
       - name: Set Workers access password
-        if: steps.check.outputs.needed == 'true' || github.event_name == 'workflow_dispatch'
+        # 密码 Secret 也只允许由 main 分支写入生产 Worker。
+        if: (steps.check.outputs.needed == 'true' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
         working-directory: sub-store-workers
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -234,17 +268,18 @@ jobs:
           printf '%s' "$SUB_STORE_PASSWORD_VALUE" | npx --yes wrangler@4.129.0 secret put SUB_STORE_FRONTEND_BACKEND_PATH --name sub-store-workers
 
       - name: Health check
-        if: steps.check.outputs.needed == 'true'
+        if: steps.check.outputs.needed == 'true' && github.ref == 'refs/heads/main'
         run: |
           URL="https://substore.kongguwuyin.dpdns.org"
           for i in 1 2 3; do
             sleep 10
             CODE=$(curl -s -o /dev/null -w "%{http_code}" "$URL/")
             echo "Attempt $i: HTTP $CODE"
-            if [ "$CODE" = "200" ] || [ "$CODE" = "302" ] || [ "$CODE" = "404" ]; then
-              echo "Worker is alive"
+            if [ "$CODE" = "200" ]; then
+              echo "Frontend homepage returned HTTP 200"
               exit 0
             fi
+            echo "Expected HTTP 200 from frontend homepage; got $CODE"
           done
           echo "Worker health check failed"
           exit 1
@@ -257,27 +292,34 @@ jobs:
             echo ""
             echo "| 项目 | 值 |"
             echo "| --- | --- |"
-            echo "| 上游版本 | `${{ steps.upstream.outputs.version }}` |"
-            echo "| 上游 SHA | `${{ steps.upstream.outputs.sha }}` |"
-            echo "| 上次同步 SHA | `${{ steps.last.outputs.sha }}` |"
+            echo "| 后端版本 | `${{ steps.upstream.outputs.version }}` |"
+            echo "| 当前后端 SHA | `${{ steps.upstream.outputs.sha }}` |"
+            echo "| 上次后端 SHA | `${{ steps.last.outputs.backend_sha }}` |"
+            echo "| 当前前端 SHA | `${{ steps.frontend_upstream.outputs.sha }}` |"
+            echo "| 上次前端 SHA | `${{ steps.last.outputs.frontend_sha }}` |"
             echo "| Worker 原始大小 | ${{ steps.size.outputs.kb }} KB (${{ steps.size.outputs.mb }} MB) |"
             echo "| Worker gzip 大小 | ${{ steps.size.outputs.gzip_kb }} KB |"
             echo ""
-            if [ "${{ steps.last.outputs.sha }}" != "none" ] && [ "${{ steps.last.outputs.sha }}" != "${{ steps.upstream.outputs.sha }}" ]; then
-              echo "**上游 diff**: https://github.com/sub-store-org/Sub-Store/compare/${{ steps.last.outputs.sha }}...${{ steps.upstream.outputs.sha }}"
+            if [ "${{ steps.last.outputs.backend_sha }}" != "none" ] && [ "${{ steps.last.outputs.backend_sha }}" != "${{ steps.upstream.outputs.sha }}" ]; then
+              echo "**后端 diff**: https://github.com/sub-store-org/Sub-Store/compare/${{ steps.last.outputs.backend_sha }}...${{ steps.upstream.outputs.sha }}"
+            fi
+            if [ "${{ steps.last.outputs.frontend_sha }}" != "none" ] && [ "${{ steps.last.outputs.frontend_sha }}" != "${{ steps.frontend_upstream.outputs.sha }}" ]; then
+              echo "**前端 diff**: https://github.com/sub-store-org/Sub-Store-Front-End/compare/${{ steps.last.outputs.frontend_sha }}...${{ steps.frontend_upstream.outputs.sha }}"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Update upstream-sha marker
+      - name: Update upstream version markers
         if: steps.check.outputs.needed == 'true'
         working-directory: sub-store-workers
         run: |
           echo "${{ steps.upstream.outputs.sha }}" > .upstream-sha
+          echo "${{ steps.frontend_upstream.outputs.sha }}" > .upstream-frontend-sha
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .upstream-sha
-          git commit -m "chore: sync upstream to ${{ steps.upstream.outputs.version }} [skip ci]" || exit 0
+          git add .upstream-sha .upstream-frontend-sha
+          git commit -m "chore: sync upstream versions [skip ci]" || exit 0
           git push
+
 
       - name: Bark notify success
         if: steps.check.outputs.needed == 'true' && success() && env.BARK_KEY != ''

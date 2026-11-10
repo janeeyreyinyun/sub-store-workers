@@ -130,7 +130,7 @@ export default {
             const backendPath = normalizeBackendPath(
                 env.SUB_STORE_FRONTEND_BACKEND_PATH,
             );
-            const isPublicPath = /^\/(api\/download|api\/preview|api\/sub\/flow)/.test(pathname);
+            const isPublicPath = /^\/(?:api\/download|api\/preview|api\/sub\/flow)(?:\/|$)/.test(pathname);
             const isManagementApi = !isPublicPath && pathname.startsWith('/api/');
             const isAuthDisabledManagementApi = !backendPath && isManagementApi;
             if (isAuthDisabledManagementApi) {
@@ -208,14 +208,38 @@ export default {
                 // token 有效，继续正常路由
             }
 
-            // 路由分发
-            const response = await $app.handleRequest(request);
+            // 前端页面与静态资源优先由 ASSETS 提供，避免后端首页重定向到官方站点。
+            // 管理 API、分享、下载、预览和订阅路由仍由后端处理。
+            const isBackendEndpoint =
+                pathname.startsWith('/api/') ||
+                pathname.startsWith('/share/') ||
+                pathname.startsWith('/download/') ||
+                pathname.startsWith('/preview/') ||
+                pathname.startsWith('/sub/');
+            let response;
+            let servedFrontendAsset = false;
+            if (
+                !isBackendEndpoint &&
+                ['GET', 'HEAD'].includes(request.method.toUpperCase()) &&
+                env.ASSETS?.fetch
+            ) {
+                response = await env.ASSETS.fetch(request);
+                if (response.status !== 404) {
+                    servedFrontendAsset = true;
+
+                }
+            }
+            if (!servedFrontendAsset) {
+                response = await $app.handleRequest(request);
+            }
 
             // 禁止 Cloudflare CDN/边缘节点缓存动态 API 响应
             // 未设置此头时，不同 URL 路径（如 /share/ 和 /download/）的响应可能被独立缓存，
             // 导致同一订阅在不同接口返回不一致（陈旧）的数据
-            response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
-            response.headers.set('CDN-Cache-Control', 'no-store');
+            if (!servedFrontendAsset) {
+                response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+                response.headers.set('CDN-Cache-Control', 'no-store');
+            }
 
             if (isAuthDisabledManagementApi) {
                 response.headers.set('X-Sub-Store-Security-Warning', 'SUB_STORE_FRONTEND_BACKEND_PATH is not configured; management API is public');
