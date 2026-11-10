@@ -38,6 +38,15 @@ jobs:
           path: Sub-Store
           fetch-depth: 1
 
+      - name: Checkout Sub-Store Front-End
+        if: steps.check.outputs.needed == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: sub-store-org/Sub-Store-Front-End
+          ref: master
+          path: Sub-Store-Front-End
+          fetch-depth: 1
+
       - name: Get upstream version
         id: upstream
         working-directory: Sub-Store
@@ -137,6 +146,16 @@ jobs:
         working-directory: sub-store-workers
         run: npm run build
 
+      - name: Build official frontend
+        if: steps.check.outputs.needed == 'true'
+        working-directory: Sub-Store-Front-End
+        run: |
+          printf "VITE_PUBLIC_PATH=/\\n" > .env.production.local
+          corepack pnpm install --frozen-lockfile
+          corepack pnpm build
+          mkdir -p ../sub-store-workers/frontend-dist
+          cp -a dist/. ../sub-store-workers/frontend-dist/
+
       - name: Check worker bundle size
         if: steps.check.outputs.needed == 'true'
         id: size
@@ -173,6 +192,11 @@ jobs:
           routes = [{ pattern = "substore.kongguwuyin.dpdns.org", custom_domain = true }]
           compatibility_date = "2024-09-23"
           compatibility_flags = ["nodejs_compat"]
+
+          [assets]
+          directory = "./frontend-dist"
+          binding = "ASSETS"
+          run_worker_first = true
 
           [[kv_namespaces]]
           binding = "SUB_STORE_DATA"
