@@ -230,20 +230,29 @@ jobs:
 
       - name: Verify Vue app in a real browser
         working-directory: sub-store-workers
-        timeout-minutes: 5
+        timeout-minutes: 3
         run: |
           set -euo pipefail
           setsid npx wrangler dev --local --config wrangler.runtime.toml --ip 127.0.0.1 --port 8787 > /tmp/sub-store-browser-wrangler.log 2>&1 &
           WRANGLER_PID=$!
           cleanup() {
             kill -- -"$WRANGLER_PID" 2>/dev/null || true
+            # Never let process cleanup hold the GitHub Actions step open indefinitely.
+            for attempt in $(seq 1 20); do
+              if ! kill -0 "$WRANGLER_PID" 2>/dev/null; then
+                break
+              fi
+              sleep 0.25
+            done
+            kill -KILL -- -"$WRANGLER_PID" 2>/dev/null || true
+            # Reap the direct child; it has already received SIGKILL if still alive.
             wait "$WRANGLER_PID" 2>/dev/null || true
           }
           trap cleanup EXIT
 
           READY=0
-          for attempt in $(seq 1 40); do
-            if curl --silent --fail http://127.0.0.1:8787/ >/dev/null; then
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail --max-time 2 http://127.0.0.1:8787/ >/dev/null; then
               READY=1
               break
             fi
@@ -251,7 +260,7 @@ jobs:
               cat /tmp/sub-store-browser-wrangler.log
               exit 1
             fi
-            sleep 2
+            sleep 1
           done
           if [ "$READY" != "1" ]; then
             cat /tmp/sub-store-browser-wrangler.log
@@ -259,57 +268,47 @@ jobs:
             exit 1
           fi
 
-          timeout --signal=TERM --kill-after=10s 150s node --input-type=module <<'NODE'
+          timeout --signal=TERM --kill-after=5s 90s node --input-type=module <<'NODE'
           import { chromium } from 'playwright';
 
-          console.log('Browser test: launching Chromium.');
-          const browser = await chromium.launch({ headless: true, timeout: 30000 });
-          const page = await browser.newPage();
-          page.setDefaultTimeout(20000);
-          page.setDefaultNavigationTimeout(30000);
-          console.log('Browser test: Chromium launched; checking /.');
+          let browser;
           const pageErrors = [];
           const failedResponses = [];
-          page.on('pageerror', error => pageErrors.push(error.message));
-          page.on('response', response => {
-            if (response.status() >= 500) {
-              failedResponses.push(`${response.status()} ${response.url()}`);
-            }
-          });
-
           try {
-            const response = await page.goto('http://127.0.0.1:8787/', {
-              waitUntil: 'domcontentloaded',
-              timeout: 60000
+            console.log('Browser test: launching Chromium.');
+            browser = await chromium.launch({ headless: true, timeout: 15000 });
+            const page = await browser.newPage();
+            page.setDefaultTimeout(15000);
+            page.setDefaultNavigationTimeout(20000);
+            page.on('pageerror', error => pageErrors.push(error.message));
+            page.on('response', response => {
+              if (response.status() >= 500) {
+                failedResponses.push(`${response.status()} ${response.url()}`);
+              }
             });
-            if (response?.status() !== 200) {
-              throw new Error(`Frontend root returned HTTP ${response?.status()}`);
-            }
-            console.log('Browser test: / returned HTTP 200; waiting for Vue mount.');
-            await page.waitForFunction(() => {
-              const app = document.querySelector('#app');
-              return app && app.children.length > 0;
-            }, { timeout: 20000 });
-            const title = await page.title();
-            if (!title.toLowerCase().includes('sub-store')) {
-              throw new Error(`Unexpected document title: ${title}`);
-            }
-            console.log(`PASS: Vue app mounted at / (title: ${title})`);
 
-            console.log('Browser test: / mounted; checking /subs.');
-            const routeResponse = await page.goto('http://127.0.0.1:8787/subs', {
-              waitUntil: 'domcontentloaded',
-              timeout: 30000
-            });
-            if (routeResponse?.status() !== 200) {
-              throw new Error(`SPA route /subs returned HTTP ${routeResponse?.status()}`);
+            for (const path of ['/', '/subs']) {
+              console.log(`Browser test: navigating to ${path}`);
+              const response = await page.goto(`http://127.0.0.1:8787${path}`, {
+                waitUntil: 'domcontentloaded',
+                timeout: 20000
+              });
+              if (response?.status() !== 200) {
+                throw new Error(`${path} returned HTTP ${response?.status()}`);
+              }
+              console.log(`Browser test: ${path} returned HTTP 200; waiting for Vue mount.`);
+              await page.waitForFunction(() => {
+                const app = document.querySelector('#app');
+                return app && app.children.length > 0;
+              }, { timeout: 15000 });
+              console.log(`PASS: Vue app mounted at ${path}`);
+              if (path === '/') {
+                const title = await page.title();
+                if (!title.toLowerCase().includes('sub-store')) {
+                  throw new Error(`Unexpected document title: ${title}`);
+                }
+              }
             }
-            console.log('Browser test: /subs returned HTTP 200; waiting for Vue mount.');
-            await page.waitForFunction(() => {
-              const app = document.querySelector('#app');
-              return app && app.children.length > 0;
-            }, { timeout: 20000 });
-            console.log('PASS: Vue app mounted on SPA route /subs');
 
             if (pageErrors.length) {
               throw new Error('Browser JavaScript errors: ' + pageErrors.join(' | '));
@@ -319,7 +318,13 @@ jobs:
             }
             console.log('PASS: no uncaught browser errors or HTTP 5xx responses');
           } finally {
-            await browser.close();
+            if (browser) {
+              console.log('Browser test: closing Chromium.');
+              await Promise.race([
+                browser.close(),
+                new Promise(resolve => setTimeout(resolve, 3000))
+              ]);
+            }
           }
           NODE
 
