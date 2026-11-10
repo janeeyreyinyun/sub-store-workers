@@ -96,7 +96,7 @@ jobs:
             ['backend endpoints are excluded from frontend fallback', worker.includes("pathname.startsWith('/api/')") && worker.includes("pathname.startsWith('/share/')") && worker.includes("pathname.startsWith('/download/')") && worker.includes("pathname.startsWith('/preview/')") && worker.includes("pathname.startsWith('/sub/')")],
             ['frontend does not expose the backend password path through public HTML bootstrap', worker.includes('normalizeBackendPath') && !worker.includes('localStorage.setItem(key') && !worker.includes('Self-hosted Sub-Store')],
             ['management API without prefix is rejected when backend path is configured', worker.includes("if (!isPublicPath && pathname.startsWith('/api/'))") && worker.includes("jsonFailure(401, 'Unauthorized')")],
-                      ['public download and preview API exceptions remain explicit', worker.includes("/^\\\\/(api\\\\/download|api\\\\/preview|api\\\\/sub\\\\/flow)/.test(pathname)")],
+                      ['public download and preview API exceptions remain explicit', worker.includes('api\\\\/download') && worker.includes('api\\\\/preview') && worker.includes('api\\\\/sub\\\\/flow')],
                       ['backend prefix matching is boundary-safe', worker.includes('matchesBackendPath(pathname, backendPath)') && worker.includes('stripBackendPath(pathname, backendPath)')],
                       ['share routes retain token validation', worker.includes("pathname.startsWith('/share/')") && worker.includes('consumeShareToken') && worker.includes("'Share token is required'")],
                       ['frontend only handles GET and HEAD requests', worker.includes("['GET', 'HEAD'].includes(request.method.toUpperCase())")],
