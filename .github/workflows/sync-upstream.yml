@@ -150,7 +150,7 @@ jobs:
         if: steps.check.outputs.needed == 'true'
         working-directory: Sub-Store-Front-End
         run: |
-          printf "VITE_PUBLIC_PATH=/\\n" > .env.production.local
+          printf '%s\n' 'VITE_PUBLIC_PATH=/' > .env.production.local
           corepack pnpm install --frozen-lockfile
           corepack pnpm build
           mkdir -p ../sub-store-workers/frontend-dist
