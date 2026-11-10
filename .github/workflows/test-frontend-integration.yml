@@ -273,7 +273,7 @@ jobs:
 
           try {
             const response = await page.goto('http://127.0.0.1:8787/', {
-              waitUntil: 'networkidle',
+              waitUntil: 'domcontentloaded',
               timeout: 60000
             });
             if (response?.status() !== 200) {
@@ -290,7 +290,7 @@ jobs:
             console.log(`PASS: Vue app mounted at / (title: ${title})`);
 
             const routeResponse = await page.goto('http://127.0.0.1:8787/subs', {
-              waitUntil: 'networkidle',
+              waitUntil: 'domcontentloaded',
               timeout: 60000
             });
             if (routeResponse?.status() !== 200) {
